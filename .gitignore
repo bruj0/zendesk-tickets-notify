@@ -1,0 +1,7 @@
+.vscode
+*.txt
+test_data
+*~
+*.trace
+vars.sh
+*.lock
