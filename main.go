@@ -79,6 +79,7 @@ func detectNewTickets(cookies []*http.Cookie, userId string, baseUrl string) {
 				if err != nil {
 					panic(err)
 				}
+				currentTickets[id].CommentCount = t.CommentCount
 			}
 		} else {
 			currentTickets[id] = t
