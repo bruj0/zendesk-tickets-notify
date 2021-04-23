@@ -2,13 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"time"
 
+	"flag"
+
 	cookiemonster "github.com/MercuryEngineering/CookieMonster"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/gen2brain/beeep"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -17,6 +21,7 @@ const (
 )
 
 var currentTickets = make(map[uint]*Ticket, 100)
+var debug *bool
 
 func main() {
 	log.SetOutput(os.Stdout)
@@ -24,13 +29,28 @@ func main() {
 	log.SetLevel(log.DebugLevel)
 	log.Infof("Starting version %s", Version)
 
-	cookies, err := cookiemonster.ParseFile("cookies.txt")
+	cookieFile := flag.String("cookie-file", "cookies.txt", "Path to the cookie file")
+	baseUrl := flag.String("base-url", "my.zendesk.com", "Base URL for Zendesk")
+	userId := flag.String("userid", "", "You Zendesk user ID")
+	debug = flag.Bool("debug", false, "Enable debug output (optional)")
+
+	flag.Parse()
+
+	if len(os.Args) < 4 {
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+	log.SetLevel(log.InfoLevel)
+	if *debug {
+		log.SetLevel(log.DebugLevel)
+	}
+
+	cookies, err := cookiemonster.ParseFile(*cookieFile)
 	if err != nil {
 		panic(err)
 	}
-	userId := "389137184493"
 
-	detectNewTickets(cookies, userId)
+	detectNewTickets(cookies, *userId, *baseUrl)
 
 	ticker := time.NewTicker(1 * time.Minute)
 	quit := make(chan struct{})
@@ -39,7 +59,7 @@ func main() {
 		select {
 		case <-ticker.C:
 			log.Debugf("Detect tickets fired\n")
-			detectNewTickets(cookies, userId)
+			detectNewTickets(cookies, *userId, *baseUrl)
 		case <-quit:
 			log.Debugf("Stop ticker fired\n")
 			ticker.Stop()
@@ -48,21 +68,20 @@ func main() {
 	}
 
 }
-func detectNewTickets(cookies []*http.Cookie, userId string) {
-	newRes := zendeskCall(cookies, userId)
+func detectNewTickets(cookies []*http.Cookie, userId string, baseUrl string) {
+	newRes := zendeskCall(cookies, userId, baseUrl)
 	for id, t := range newRes {
-		if val, ok := currentTickets[id]; ok {
-			if id == 44783 {
-				log.Debugf("Checking %d comments %d>%d\n", id, val.CommentCount, currentTickets[id].CommentCount)
-			}
-			if val.CommentCount > currentTickets[id].CommentCount {
-				log.Debugf("New comment detected:%s", t)
+		if _, ok := currentTickets[id]; ok {
+			if t.CommentCount > currentTickets[id].CommentCount {
+				url := fmt.Sprintf("https://%s/agent/tickets/%d", baseUrl, t.Id)
+				log.Infof("New comment detected:%s\n\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", t.Subject, url, url)
+				err := beeep.Alert(fmt.Sprintf("New Comment for %d", t.Id), fmt.Sprintf("New Comment for %s", t.Subject), "assets/warning.png")
+				if err != nil {
+					panic(err)
+				}
 			}
 		} else {
 			currentTickets[id] = t
-			if id == 44783 {
-				log.Debugf("New ticket adaded %s", spew.Sdump(currentTickets[id]))
-			}
 		}
 	}
 }
@@ -80,9 +99,9 @@ type Ticket struct {
 	CommentCount uint   `json:"comment_count"`
 }
 
-func zendeskCall(cookies []*http.Cookie, userId string) map[uint]*Ticket {
+func zendeskCall(cookies []*http.Cookie, userId string, baseUrl string) map[uint]*Ticket {
 
-	url := "https://hashicorp.zendesk.com/api/v2/users/" + userId + "/tickets/assigned.json?include=comment_count"
+	url := fmt.Sprintf("https://%s/api/v2/users/%s/tickets/assigned.json?include=comment_count", baseUrl, userId)
 
 	Client := http.Client{
 		Timeout: time.Second * 2, // Timeout after 2 seconds
@@ -110,24 +129,25 @@ func zendeskCall(cookies []*http.Cookie, userId string) map[uint]*Ticket {
 		log.Fatalf("Reading response error: %s", readErr)
 	}
 
-	//log.Debugf("Response %s", body)
+	log.Debugf("Response %s", body)
 	ticketsResponse := TicketsResponse{}
 	jsonErr := json.Unmarshal(body, &ticketsResponse)
 	if jsonErr != nil {
 		log.Fatalf("Converting to json error: %s", jsonErr)
 	}
-	//log.Debugf("Response1=%s\n", spew.Sdump(ticketsResponse))
-	responseTickets := make(map[uint]*Ticket, len(ticketsResponse.Tickets))
+	log.Debugf("Response1=%s\n", spew.Sdump(ticketsResponse))
+	parsedTickets := make(map[uint]*Ticket, len(ticketsResponse.Tickets))
 
 	for index, t := range ticketsResponse.Tickets {
-		//log.Debugf("adding %d->%v\n", t.Id, t)
-		responseTickets[t.Id] = &ticketsResponse.Tickets[index]
-		if t.Id == 44783 {
+		log.Debugf("adding %d->%v\n", t.Id, t)
+		parsedTickets[t.Id] = &ticketsResponse.Tickets[index]
+		if t.Id == 44783 && *debug {
 			if _, ok := currentTickets[44783]; ok {
-				t.CommentCount = currentTickets[44783].CommentCount + 1
+				parsedTickets[t.Id].CommentCount = currentTickets[t.Id].CommentCount + 1
 			}
 		}
+
 	}
-	//log.Debugf("Response2=%s\n", spew.Sdump(responseTickets))
-	return responseTickets
+	log.Debugf("Response2=%s\n", spew.Sdump(parsedTickets))
+	return parsedTickets
 }
